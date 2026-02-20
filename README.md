@@ -1,13 +1,22 @@
 # mcp-server-xlsx
 
-MCP server for reading and writing `.xlsx` files. Exposes 25 tools — cell-level operations plus a SQL query engine powered by DuckDB — over the [Model Context Protocol](https://modelcontextprotocol.io/).
+Data-first MCP server for reading and writing `.xlsx` files.
 
-Stateless design — every tool call specifies the target `file` and `sheet` explicitly. No handles, no open/close lifecycle. The AI agent decides which file and sheet to operate on per call.
+## Key features
+
+- **Dual mode** — cell-level workbook operations and a DuckDB-powered SQL query engine, interleaved freely on the same file.
+- **Workbook essentials** — worksheets, rows, columns, cells, search.
+- **Data-only** — preserves existing formatting but only reads and writes values.
+- **Stateless** — every call specifies `file` and `sheet` explicitly; no handles or sessions.
+- **Atomic saves** — writes go to a temp file, then `os.replace()` into the target path.
+- **Formulas preserved** — returns formula strings (e.g. `=SUM(A1:A5)`), not cached results.
+- **Type coercion on write** — numeric strings become numbers, `=` prefix becomes a formula, everything else is text.
+- **SQL across sheets** — JOINs, GROUP BY, aggregates, subqueries via in-memory DuckDB; mutations write back to the file.
 
 ## Requirements
 
 - Python 3.13+
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- [uv](https://docs.astral.sh/uv/)
 
 ## Installation
 
@@ -15,18 +24,12 @@ Stateless design — every tool call specifies the target `file` and `sheet` exp
 uv sync
 ```
 
-Or with pip:
-
-```bash
-pip install -e .
-```
-
 ## Usage
 
 ### Standalone (stdio transport)
 
 ```bash
-uv run python main.py
+uv run main.py
 ```
 
 ### Claude Desktop
@@ -38,7 +41,7 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "mcp-server-xlsx": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/mcp-server-xlsx", "python", "main.py"]
+      "args": ["run", "--directory", "/path/to/mcp-server-xlsx", "main.py"]
     }
   }
 }
@@ -53,7 +56,7 @@ Add to your `.mcp.json`:
   "mcpServers": {
     "mcp-server-xlsx": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/mcp-server-xlsx", "python", "main.py"]
+      "args": ["run", "--directory", "/path/to/mcp-server-xlsx", "main.py"]
     }
   }
 }
@@ -150,14 +153,3 @@ Every sheet-level tool accepts:
 | `sheet` | no | Sheet name. Defaults to the first sheet in the workbook |
 
 All row/column indices are **1-based** to match Excel conventions. Cell references use standard Excel notation (`A1`, `$B$2`).
-
-## Design Notes
-
-- **Stateless.** Every call is self-contained. No session state between calls.
-- **Atomic saves.** Writes go to a temp file first, then `os.replace()` into the target path. No corruption on crash.
-- **Formulas preserved.** Files are opened with `data_only=False`. Reading a formula cell returns the formula string (e.g. `=SUM(A1:A5)`), not the cached result.
-- **Type coercion on write.** Numeric strings become numbers, `=` prefix becomes a formula, everything else is stored as text. No date parsing (too ambiguous).
-- **Styling untouched.** All write operations set cell values only — existing formatting is preserved.
-- **Errors propagate.** Invalid paths, missing sheets, and bad cell references raise `ValueError` with descriptive messages. FastMCP translates these into MCP error responses.
-- **Two modes, one file.** Free-edit (cell-level) and SQL tools operate on the same workbook and can be interleaved. Use SQL mode for sheets with clean header+rows structure, free-edit for everything else.
-- **SQL engine.** DuckDB runs in-memory. Each sheet becomes a table. Mutations rewrite the target sheet's data region after execution.

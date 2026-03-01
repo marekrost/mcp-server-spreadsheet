@@ -17,25 +17,41 @@ Data-first MCP server for reading and writing spreadsheet files (`.xlsx`, `.csv`
 ## Requirements
 
 - Python 3.13+
-- [uv](https://docs.astral.sh/uv/)
 
 ## Installation
 
+### From PyPI (recommended)
+
+No local checkout needed — just configure your MCP client (see below).
+
+### From source (for development)
+
 ```bash
+git clone https://github.com/marekrost/mcp-server-spreadsheet.git
+cd mcp-server-spreadsheet
 uv sync
 ```
 
 ## Usage
 
-### Standalone (stdio transport)
-
-```bash
-uv run main.py
-```
-
 ### Claude Desktop
 
 Add to your `claude_desktop_config.json`:
+
+**Using PyPI (recommended):**
+
+```json
+{
+  "mcpServers": {
+    "mcp-server-spreadsheet": {
+      "command": "uvx",
+      "args": ["mcp-server-spreadsheet"]
+    }
+  }
+}
+```
+
+**Using local source:**
 
 ```json
 {
@@ -52,6 +68,21 @@ Add to your `claude_desktop_config.json`:
 
 Add to your `.mcp.json`:
 
+**Using PyPI (recommended):**
+
+```json
+{
+  "mcpServers": {
+    "mcp-server-spreadsheet": {
+      "command": "uvx",
+      "args": ["mcp-server-spreadsheet"]
+    }
+  }
+}
+```
+
+**Using local source:**
+
 ```json
 {
   "mcpServers": {
@@ -61,6 +92,16 @@ Add to your `.mcp.json`:
     }
   }
 }
+```
+
+### Standalone (stdio transport)
+
+```bash
+# PyPI
+uvx mcp-server-spreadsheet
+
+# Local source
+uv run main.py
 ```
 
 ## Format notes

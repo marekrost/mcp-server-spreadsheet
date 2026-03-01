@@ -1,17 +1,18 @@
-# mcp-server-xlsx
+# mcp-server-spreadsheet
 
-Data-first MCP server for reading and writing `.xlsx` files.
+Data-first MCP server for reading and writing spreadsheet files (`.xlsx`, `.csv`, `.ods`).
 
 ## Key features
 
+- **Multi-format** — works with Excel (`.xlsx`), CSV (`.csv`), and OpenDocument (`.ods`) files through a unified tool interface.
 - **Dual mode** — cell-level workbook operations and a DuckDB-powered SQL query engine, interleaved freely on the same file.
 - **Workbook essentials** — worksheets, rows, columns, cells, search.
 - **Data-only** — preserves existing formatting but only reads and writes values.
 - **Stateless** — every call specifies `file` and `sheet` explicitly; no handles or sessions.
 - **Atomic saves** — writes go to a temp file, then `os.replace()` into the target path.
-- **Formulas preserved** — returns formula strings (e.g. `=SUM(A1:A5)`), not cached results.
-- **Type coercion on write** — numeric strings become numbers, `=` prefix becomes a formula, everything else is text.
+- **Type coercion on write** — numeric strings become numbers, everything else is text.
 - **SQL across sheets** — JOINs, GROUP BY, aggregates, subqueries via in-memory DuckDB; mutations write back to the file.
+- **CSV as single-sheet workbook** — CSV files are treated as a workbook with one sheet named `default`.
 
 ## Requirements
 
@@ -39,9 +40,9 @@ Add to your `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "mcp-server-xlsx": {
+    "mcp-server-spreadsheet": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/mcp-server-xlsx", "main.py"]
+      "args": ["run", "--directory", "/path/to/mcp-server-spreadsheet", "main.py"]
     }
   }
 }
@@ -54,13 +55,23 @@ Add to your `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "mcp-server-xlsx": {
+    "mcp-server-spreadsheet": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/mcp-server-xlsx", "main.py"]
+      "args": ["run", "--directory", "/path/to/mcp-server-spreadsheet", "main.py"]
     }
   }
 }
 ```
+
+## Format notes
+
+| Format | Sheets | Formulas | Types |
+|---|---|---|---|
+| `.xlsx` | Multiple | Preserved as strings | Native (int, float, date, bool) |
+| `.ods` | Multiple | Not preserved | Native (int, float, date, bool) |
+| `.csv` | Single (`default`) | N/A | Inferred on load (int, float, text) |
+
+Sheet management tools (`add_sheet`, `delete_sheet`, `copy_sheet`) raise an error for CSV files.
 
 ## Tools
 
@@ -68,9 +79,9 @@ Add to your `.mcp.json`:
 
 | Tool | Description |
 |---|---|
-| `list_workbooks` | List all `.xlsx` files in a directory (non-recursive) |
-| `create_workbook` | Create a new empty `.xlsx` file with an optional initial sheet name |
-| `copy_workbook` | Copy an existing `.xlsx` file to a new path |
+| `list_workbooks` | List all spreadsheet files in a directory (non-recursive) |
+| `create_workbook_file` | Create a new empty spreadsheet file (format by extension) |
+| `copy_workbook` | Copy an existing file to a new path |
 
 ### Sheet Operations
 
@@ -149,7 +160,7 @@ Every sheet-level tool accepts:
 
 | Parameter | Required | Description |
 |---|---|---|
-| `file` | yes | Path to the `.xlsx` file |
+| `file` | yes | Path to the spreadsheet file (.xlsx, .csv, or .ods) |
 | `sheet` | no | Sheet name. Defaults to the first sheet in the workbook |
 
-All row/column indices are **1-based** to match Excel conventions. Cell references use standard Excel notation (`A1`, `$B$2`).
+All row/column indices are **1-based**. Cell references use A1 notation (`A1`, `$B$2`).

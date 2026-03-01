@@ -1,11 +1,12 @@
 [project]
-name = "mcp-server-xlsx"
-version = "0.1.0"
-description = "MCP server for reading and writing .xlsx files"
+name = "mcp-server-spreadsheet"
+version = "0.2.0"
+description = "MCP server for reading and writing spreadsheet files (.xlsx, .csv, .ods)"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "mcp>=1.0.0",
     "openpyxl>=3.1.0",
     "duckdb>=0.10.0",
+    "odfpy>=1.4.0",
 ]

@@ -1,83 +1,36 @@
-import os
 import re
 import shutil
-import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated
 
 import duckdb
 from mcp.server.fastmcp import FastMCP
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils import get_column_letter, column_index_from_string
-from openpyxl.utils.cell import range_boundaries
 from pydantic import Field
 
-mcp = FastMCP("mcp-server-xlsx")
+from backends import SUPPORTED_EXTENSIONS, load_workbook, create_workbook
+from backends.base import (
+    SpreadsheetWorkbook,
+    SpreadsheetSheet,
+    coerce_value,
+    get_column_letter,
+    parse_cell,
+    parse_range,
+)
+
+mcp = FastMCP("mcp-server-spreadsheet")
+
+_EXT_LABEL = ", ".join(sorted(SUPPORTED_EXTENSIONS))
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load(file: str) -> Workbook:
-    p = Path(file)
-    if not p.exists():
-        raise ValueError(f"File not found: {file}")
-    if p.suffix.lower() != ".xlsx":
-        raise ValueError(f"Not an .xlsx file: {file}")
-    return load_workbook(p, data_only=False)
-
-
-def _resolve_sheet(wb: Workbook, sheet: str | None):
+def _resolve_sheet(wb: SpreadsheetWorkbook, sheet: str | None) -> SpreadsheetSheet:
     if sheet is None:
         return wb.worksheets[0]
-    if sheet not in wb.sheetnames:
-        raise ValueError(f"Sheet not found: {sheet!r}. Available: {wb.sheetnames}")
-    return wb[sheet]
-
-
-def _save(wb: Workbook, file: str) -> None:
-    p = Path(file)
-    fd, tmp = tempfile.mkstemp(suffix=".xlsx", dir=p.parent)
-    os.close(fd)
-    try:
-        wb.save(tmp)
-        os.replace(tmp, p)
-    except BaseException:
-        os.unlink(tmp)
-        raise
-
-
-def _parse_cell(cell: str) -> tuple[int, int]:
-    cell = cell.replace("$", "")
-    match = re.match(r"^([A-Za-z]+)(\d+)$", cell)
-    if not match:
-        raise ValueError(f"Invalid cell reference: {cell!r}")
-    col = column_index_from_string(match.group(1))
-    row = int(match.group(2))
-    return row, col
-
-
-def _parse_range(range_str: str) -> tuple[int, int, int, int]:
-    try:
-        min_col, min_row, max_col, max_row = range_boundaries(range_str.replace("$", ""))
-    except Exception:
-        raise ValueError(f"Invalid range: {range_str!r}")
-    return min_col, min_row, max_col, max_row
-
-
-def _coerce_value(value):
-    if value is None or not isinstance(value, str):
-        return value
-    if value.startswith("="):
-        return value
-    try:
-        if "." in value or "e" in value.lower():
-            return float(value)
-        return int(value)
-    except ValueError:
-        return value
+    return wb.get_sheet(sheet)
 
 
 # ---------------------------------------------------------------------------
@@ -88,46 +41,48 @@ def _coerce_value(value):
 def list_workbooks(
     directory: Annotated[str, Field(description="Absolute or relative path to the directory to scan")],
 ) -> list[str]:
-    """List all .xlsx files in a directory (non-recursive).
+    """List all spreadsheet files (.xlsx, .csv, .ods) in a directory (non-recursive).
 
-    Returns the full path of each .xlsx file found, sorted alphabetically.
+    Returns the full path of each file found, sorted alphabetically.
     """
     d = Path(directory)
     if not d.is_dir():
         raise ValueError(f"Not a directory: {directory}")
-    return sorted(str(f) for f in d.iterdir() if f.suffix.lower() == ".xlsx" and f.is_file())
+    return sorted(
+        str(f)
+        for f in d.iterdir()
+        if f.suffix.lower() in SUPPORTED_EXTENSIONS and f.is_file()
+    )
 
 
 @mcp.tool()
-def create_workbook(
-    file: Annotated[str, Field(description="Path where the new .xlsx file will be created. Must not already exist.")],
-    sheet_name: Annotated[str | None, Field(description="Name for the initial sheet. Defaults to 'Sheet' if omitted.")] = None,
+def create_workbook_file(
+    file: Annotated[str, Field(description=f"Path where the new file will be created ({_EXT_LABEL}). Must not already exist.")],
+    sheet_name: Annotated[str | None, Field(description="Name for the initial sheet. Defaults to 'Sheet' for xlsx/ods, 'default' for csv.")] = None,
 ) -> str:
-    """Create a new empty .xlsx workbook at the given path.
+    """Create a new empty spreadsheet file at the given path.
 
+    The file format is determined by the extension (.xlsx, .csv, or .ods).
     The file must not already exist. Returns the absolute path of the
-    created file. The workbook is created with a single empty sheet.
+    created file.
     """
     p = Path(file)
     if p.exists():
         raise ValueError(f"File already exists: {file}")
-    wb = Workbook()
-    if sheet_name:
-        wb.active.title = sheet_name
-    _save(wb, file)
+    wb = create_workbook(file, sheet_name)
+    wb.save(file)
     return str(p.resolve())
 
 
 @mcp.tool()
 def copy_workbook(
-    source: Annotated[str, Field(description="Path to the existing .xlsx file to copy")],
+    source: Annotated[str, Field(description="Path to the existing spreadsheet file to copy")],
     destination: Annotated[str, Field(description="Path for the new copy. Must not already exist.")],
 ) -> str:
-    """Copy an existing .xlsx file to a new location.
+    """Copy an existing spreadsheet file to a new location.
 
-    Performs a full file copy preserving all data, formatting, and metadata.
-    The destination must not already exist. Returns the absolute path of
-    the new file.
+    Performs a full file copy preserving all data. The destination must
+    not already exist. Returns the absolute path of the new file.
     """
     src = Path(source)
     if not src.exists():
@@ -145,36 +100,36 @@ def copy_workbook(
 
 @mcp.tool()
 def list_sheets(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
 ) -> list[str]:
     """List all sheet names in a workbook, in workbook order.
 
-    Returns a list of sheet name strings, e.g. ["Sheet1", "Data", "Summary"].
+    Returns a list of sheet name strings. CSV files always return
+    a single sheet named 'default'.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     return wb.sheetnames
 
 
 @mcp.tool()
 def add_sheet(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
-    name: Annotated[str | None, Field(description="Name for the new sheet. Auto-generated if omitted (e.g. 'Sheet1').")] = None,
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
+    name: Annotated[str | None, Field(description="Name for the new sheet. Auto-generated if omitted.")] = None,
     position: Annotated[int | None, Field(description="1-based position to insert the sheet. Appended at the end if omitted.")] = None,
 ) -> str:
     """Add a new sheet to the workbook.
 
-    Returns the name of the newly created sheet (which may differ from the
-    requested name if it conflicted with an existing sheet).
+    Returns the name of the newly created sheet. Not supported for CSV files.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = wb.create_sheet(title=name, index=position if position is None else position - 1)
-    _save(wb, file)
+    wb.save(file)
     return ws.title
 
 
 @mcp.tool()
 def rename_sheet(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     old_name: Annotated[str, Field(description="Current name of the sheet to rename")],
     new_name: Annotated[str, Field(description="New name for the sheet")],
 ) -> str:
@@ -182,52 +137,48 @@ def rename_sheet(
 
     Returns the new sheet name on success.
     """
-    wb = _load(file)
-    if old_name not in wb.sheetnames:
-        raise ValueError(f"Sheet not found: {old_name!r}")
-    wb[old_name].title = new_name
-    _save(wb, file)
+    wb = load_workbook(file)
+    ws = wb.get_sheet(old_name)
+    ws.title = new_name
+    wb.save(file)
     return new_name
 
 
 @mcp.tool()
 def delete_sheet(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     name: Annotated[str, Field(description="Name of the sheet to delete")],
 ) -> str:
     """Delete a sheet by name from the workbook.
 
-    All data in the sheet is permanently removed. The workbook must have
-    at least one remaining sheet after deletion.
+    All data in the sheet is permanently removed. Not supported for CSV files.
     """
-    wb = _load(file)
-    if name not in wb.sheetnames:
-        raise ValueError(f"Sheet not found: {name!r}")
-    del wb[name]
-    _save(wb, file)
+    wb = load_workbook(file)
+    wb.delete_sheet(name)
+    wb.save(file)
     return f"Deleted sheet {name!r}"
 
 
 @mcp.tool()
 def copy_sheet(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     source_name: Annotated[str, Field(description="Name of the existing sheet to duplicate")],
-    new_name: Annotated[str | None, Field(description="Name for the copy. Auto-generated (e.g. 'Sheet Copy') if omitted.")] = None,
+    new_name: Annotated[str | None, Field(description="Name for the copy. Auto-generated if omitted.")] = None,
     position: Annotated[int | None, Field(description="1-based position for the copied sheet. Placed at the end if omitted.")] = None,
 ) -> str:
     """Duplicate a sheet within the same workbook.
 
-    Copies all cell values and formatting. Returns the name of the new sheet.
+    Copies all cell values. Returns the name of the new sheet.
+    Not supported for CSV files.
     """
-    wb = _load(file)
-    if source_name not in wb.sheetnames:
-        raise ValueError(f"Sheet not found: {source_name!r}")
-    copied = wb.copy_worksheet(wb[source_name])
+    wb = load_workbook(file)
+    copied = wb.copy_sheet(source_name)
     if new_name:
         copied.title = new_name
     if position is not None:
-        wb.move_sheet(copied, offset=position - 1 - wb.sheetnames.index(copied.title))
-    _save(wb, file)
+        current_idx = wb.sheetnames.index(copied.title)
+        wb.move_sheet(copied, offset=position - 1 - current_idx)
+    wb.save(file)
     return copied.title
 
 
@@ -237,7 +188,7 @@ def copy_sheet(
 
 @mcp.tool()
 def read_sheet(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
     start_row: Annotated[int | None, Field(description="First row to include (1-based). Defaults to the first used row.")] = None,
     end_row: Annotated[int | None, Field(description="Last row to include (1-based). Defaults to the last used row.")] = None,
@@ -246,68 +197,63 @@ def read_sheet(
 ) -> list[list]:
     """Read an entire sheet (or a bounded sub-region) as a list of rows.
 
-    Each row is a list of cell values. Formula cells return the formula
-    string (e.g. '=SUM(A1:A5)'), not the cached result. Empty cells
-    appear as null. Use the optional row/column bounds to limit output
-    for large sheets.
+    Each row is a list of cell values. Empty cells appear as null.
+    Use the optional row/column bounds to limit output for large sheets.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
     rows = ws.iter_rows(
         min_row=start_row,
         max_row=end_row,
         min_col=start_column,
         max_col=end_column,
-        values_only=True,
     )
     return [list(r) for r in rows]
 
 
 @mcp.tool()
 def read_cell(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
-    cell: Annotated[str, Field(description="Cell reference in Excel notation, e.g. 'B3' or '$B$3'")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
+    cell: Annotated[str, Field(description="Cell reference in A1 notation, e.g. 'B3' or '$B$3'")],
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ):
     """Read the value of a single cell.
 
-    Returns the cell's value in its stored type: numbers as int/float,
-    text as string, formulas as their formula string (e.g. '=A1+B1'),
+    Returns the cell's value: numbers as int/float, text as string,
     and empty cells as null.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
-    row, col = _parse_cell(cell)
-    return ws.cell(row=row, column=col).value
+    row, col = parse_cell(cell)
+    return ws.cell_value(row, col)
 
 
 @mcp.tool()
 def read_range(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
-    range_str: Annotated[str, Field(description="Cell range in Excel notation, e.g. 'A1:D10' or '$A$1:$D$10'")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
+    range_str: Annotated[str, Field(description="Cell range in A1 notation, e.g. 'A1:D10' or '$A$1:$D$10'")],
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> list[list]:
     """Read a rectangular range of cells as a list of rows.
 
     Returns a 2D array where each inner list is one row of values.
-    Formula cells return the formula string, empty cells return null.
+    Empty cells return null.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
-    min_col, min_row, max_col, max_row = _parse_range(range_str)
+    min_col, min_row, max_col, max_row = parse_range(range_str)
     rows = ws.iter_rows(
         min_row=min_row,
         max_row=max_row,
         min_col=min_col,
         max_col=max_col,
-        values_only=True,
     )
     return [list(r) for r in rows]
 
 
 @mcp.tool()
 def get_sheet_dimensions(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> dict:
     """Get the dimensions of the used range in a sheet.
@@ -316,11 +262,11 @@ def get_sheet_dimensions(
     used row and M is the number of the last used column. Both are 0 for
     an empty sheet.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
     return {
-        "rows": ws.max_row or 0,
-        "columns": ws.max_column or 0,
+        "rows": ws.max_row,
+        "columns": ws.max_column,
     }
 
 
@@ -330,74 +276,71 @@ def get_sheet_dimensions(
 
 @mcp.tool()
 def write_cell(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
-    cell: Annotated[str, Field(description="Target cell in Excel notation, e.g. 'B3'")],
-    value: Annotated[object, Field(description="Value to write. Numeric strings are coerced to numbers, strings starting with '=' are stored as formulas, everything else is stored as text.")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
+    cell: Annotated[str, Field(description="Target cell in A1 notation, e.g. 'B3'")],
+    value: Annotated[object, Field(description="Value to write. Numeric strings are coerced to numbers, everything else is stored as text.")],
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> str:
     """Write a single value to a cell.
 
     Overwrites any existing value. The value is type-coerced: numeric
-    strings become numbers, '=' prefix means formula, all else is text.
-    Existing cell formatting is preserved.
+    strings become numbers, all else is text.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
-    row, col = _parse_cell(cell)
-    ws.cell(row=row, column=col, value=_coerce_value(value))
-    _save(wb, file)
+    row, col = parse_cell(cell)
+    ws.set_cell(row, col, coerce_value(value))
+    wb.save(file)
     return f"Wrote to {cell}"
 
 
 @mcp.tool()
 def write_range(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     start_cell: Annotated[str, Field(description="Top-left cell where writing begins, e.g. 'B2'")],
-    data: Annotated[list[list], Field(description="2D array of values (list of rows), e.g. [[1, 2, 3], ['a', 'b', 'c']]. Numeric strings are coerced to numbers, '=' prefix is treated as a formula.")],
+    data: Annotated[list[list], Field(description="2D array of values (list of rows), e.g. [[1, 2, 3], ['a', 'b', 'c']]. Numeric strings are coerced to numbers.")],
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> str:
     """Write a 2D array of values into a rectangular region.
 
     Writing starts at start_cell and expands right and down to fit the
-    data. Each value is type-coerced: numeric strings become numbers,
-    strings starting with '=' are stored as formulas, everything else
-    is text. Prefer this over multiple write_cell calls for efficiency.
+    data. Prefer this over multiple write_cell calls for efficiency.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
-    row_off, col_off = _parse_cell(start_cell)
+    row_off, col_off = parse_cell(start_cell)
     for r_idx, row in enumerate(data):
         for c_idx, val in enumerate(row):
-            ws.cell(row=row_off + r_idx, column=col_off + c_idx, value=_coerce_value(val))
-    _save(wb, file)
+            ws.set_cell(row_off + r_idx, col_off + c_idx, coerce_value(val))
+    wb.save(file)
     return f"Wrote {len(data)} rows starting at {start_cell}"
 
 
 @mcp.tool()
 def append_rows(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     data: Annotated[list[list], Field(description="List of rows to append, e.g. [['Alice', 30], ['Bob', 25]]. Each inner list is one row.")],
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> str:
     """Append one or more rows after the last used row in the sheet.
 
-    Values are type-coerced (numeric strings to numbers, '=' to formulas).
+    Values are type-coerced (numeric strings to numbers).
     This is the most efficient way to add data to the end of a sheet.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
     for row in data:
-        ws.append([_coerce_value(v) for v in row])
-    _save(wb, file)
+        ws.append([coerce_value(v) for v in row])
+    wb.save(file)
     return f"Appended {len(data)} rows"
 
 
 @mcp.tool()
 def insert_rows(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     row: Annotated[int, Field(description="1-based row index where new rows will be inserted. Existing rows at and below this index shift down.")],
     count: Annotated[int, Field(description="Number of rows to insert. If data is provided and longer, enough rows are inserted to fit the data.")] = 1,
-    data: Annotated[list[list] | None, Field(description="Optional 2D array of values to fill the inserted rows, e.g. [['a', 'b'], ['c', 'd']]. Leave empty for blank rows.")] = None,
+    data: Annotated[list[list] | None, Field(description="Optional 2D array of values to fill the inserted rows. Leave empty for blank rows.")] = None,
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> str:
     """Insert rows at a given position, shifting existing rows down.
@@ -405,88 +348,86 @@ def insert_rows(
     If data is provided, the inserted rows are filled with those values
     (type-coerced). Otherwise the rows are left blank.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
     actual_count = max(count, len(data) if data else 0)
-    ws.insert_rows(row, amount=actual_count)
+    ws.insert_rows(row, actual_count)
     if data:
         for r_idx, row_data in enumerate(data):
             for c_idx, val in enumerate(row_data):
-                ws.cell(row=row + r_idx, column=c_idx + 1, value=_coerce_value(val))
-    _save(wb, file)
+                ws.set_cell(row + r_idx, c_idx + 1, coerce_value(val))
+    wb.save(file)
     return f"Inserted {actual_count} rows at row {row}"
 
 
 @mcp.tool()
 def delete_rows(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     row: Annotated[int, Field(description="1-based index of the first row to delete")],
     count: Annotated[int, Field(description="Number of consecutive rows to delete starting from row")] = 1,
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> str:
     """Delete one or more rows, shifting remaining rows up.
 
-    All data in the deleted rows is permanently removed. Cell references
-    in formulas on other sheets are not automatically updated.
+    All data in the deleted rows is permanently removed.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
-    ws.delete_rows(row, amount=count)
-    _save(wb, file)
+    ws.delete_rows(row, count)
+    wb.save(file)
     return f"Deleted {count} rows starting at row {row}"
 
 
 @mcp.tool()
 def clear_range(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
-    range_str: Annotated[str, Field(description="Range to clear in Excel notation, e.g. 'A1:D10'. Cell formatting is preserved, only values are removed.")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
+    range_str: Annotated[str, Field(description="Range to clear in A1 notation, e.g. 'A1:D10'. Only values are removed.")],
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> str:
     """Clear all cell values in a range without removing rows or columns.
 
-    Sets every cell in the range to null. Row/column structure and cell
-    formatting are preserved — only the values are erased.
+    Sets every cell in the range to null. Row/column structure is preserved.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
-    min_col, min_row, max_col, max_row = _parse_range(range_str)
+    min_col, min_row, max_col, max_row = parse_range(range_str)
     for r in range(min_row, max_row + 1):
         for c in range(min_col, max_col + 1):
-            ws.cell(row=r, column=c).value = None
-    _save(wb, file)
+            ws.set_cell(r, c, None)
+    wb.save(file)
     return f"Cleared range {range_str}"
 
 
 @mcp.tool()
 def copy_range(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
-    source_range: Annotated[str, Field(description="Range to copy from in Excel notation, e.g. 'A1:C5'")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
+    source_range: Annotated[str, Field(description="Range to copy from in A1 notation, e.g. 'A1:C5'")],
     dest_start: Annotated[str, Field(description="Top-left cell of the destination, e.g. 'E1'. The copied block expands right and down from here.")],
     sheet: Annotated[str | None, Field(description="Source sheet name. Defaults to the first sheet if omitted.")] = None,
     dest_sheet: Annotated[str | None, Field(description="Destination sheet name. Defaults to the same sheet as the source if omitted.")] = None,
 ) -> str:
     """Copy a rectangular block of cells to another location.
 
-    Copies raw values only (not formatting). The destination can be on
-    the same sheet or a different sheet in the same workbook. Existing
-    values at the destination are overwritten.
+    Copies raw values only. The destination can be on the same sheet or
+    a different sheet in the same workbook. Existing values at the
+    destination are overwritten.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     src_ws = _resolve_sheet(wb, sheet)
     dst_ws = _resolve_sheet(wb, dest_sheet) if dest_sheet else src_ws
 
-    min_col, min_row, max_col, max_row = _parse_range(source_range)
-    dest_row, dest_col = _parse_cell(dest_start)
+    min_col, min_row, max_col, max_row = parse_range(source_range)
+    dest_row, dest_col = parse_cell(dest_start)
 
     for r in range(min_row, max_row + 1):
         for c in range(min_col, max_col + 1):
-            val = src_ws.cell(row=r, column=c).value
-            dst_ws.cell(
-                row=dest_row + (r - min_row),
-                column=dest_col + (c - min_col),
-                value=val,
+            val = src_ws.cell_value(r, c)
+            dst_ws.set_cell(
+                dest_row + (r - min_row),
+                dest_col + (c - min_col),
+                val,
             )
-    _save(wb, file)
+    wb.save(file)
     return f"Copied {source_range} to {dest_start}"
 
 
@@ -496,38 +437,31 @@ def copy_range(
 
 @mcp.tool()
 def insert_columns(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     column: Annotated[int, Field(description="1-based column index where new columns will be inserted (e.g. 1 = A, 2 = B). Existing columns at and to the right shift right.")],
     count: Annotated[int, Field(description="Number of blank columns to insert")] = 1,
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> str:
-    """Insert one or more blank columns, shifting existing columns right.
-
-    The inserted columns are empty. Existing data to the right of the
-    insertion point is shifted.
-    """
-    wb = _load(file)
+    """Insert one or more blank columns, shifting existing columns right."""
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
-    ws.insert_cols(column, amount=count)
-    _save(wb, file)
+    ws.insert_cols(column, count)
+    wb.save(file)
     return f"Inserted {count} columns at column {column}"
 
 
 @mcp.tool()
 def delete_columns(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     column: Annotated[int, Field(description="1-based index of the first column to delete (e.g. 1 = A, 2 = B)")],
     count: Annotated[int, Field(description="Number of consecutive columns to delete starting from column")] = 1,
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> str:
-    """Delete one or more columns, shifting remaining columns left.
-
-    All data in the deleted columns is permanently removed.
-    """
-    wb = _load(file)
+    """Delete one or more columns, shifting remaining columns left."""
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
-    ws.delete_cols(column, amount=count)
-    _save(wb, file)
+    ws.delete_cols(column, count)
+    wb.save(file)
     return f"Deleted {count} columns at column {column}"
 
 
@@ -537,29 +471,28 @@ def delete_columns(
 
 @mcp.tool()
 def search_sheet(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
-    pattern: Annotated[str, Field(description="Regular expression pattern to search for. Matched against the string representation of each cell value. Use simple strings for literal search, or regex syntax for pattern matching (e.g. '\\d{3}-\\d{4}' for phone-number fragments).")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
+    pattern: Annotated[str, Field(description="Regular expression pattern to search for. Matched against the string representation of each cell value.")],
     sheet: Annotated[str | None, Field(description="Sheet name. Defaults to the first sheet if omitted.")] = None,
 ) -> list[dict]:
     """Search all cells in a sheet for values matching a regex pattern.
 
     Returns a list of matches, each with the cell reference and value,
-    e.g. [{"cell": "B3", "value": "hello"}, ...]. Searches the string
-    representation of every non-empty cell. Returns an empty list if
-    no matches are found.
+    e.g. [{"cell": "B3", "value": "hello"}, ...]. Returns an empty list
+    if no matches are found.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, sheet)
     regex = re.compile(pattern)
     results = []
-    for row in ws.iter_rows(values_only=False):
-        for cell in row:
-            val = cell.value
+    for r in range(1, ws.max_row + 1):
+        for c in range(1, ws.max_column + 1):
+            val = ws.cell_value(r, c)
             if val is None:
                 continue
             if regex.search(str(val)):
                 results.append({
-                    "cell": f"{get_column_letter(cell.column)}{cell.row}",
+                    "cell": f"{get_column_letter(c)}{r}",
                     "value": val,
                 })
     return results
@@ -569,20 +502,20 @@ def search_sheet(
 # Table Mode — SQL Helpers
 # ---------------------------------------------------------------------------
 
-def _sheet_to_records(ws, header_row: int = 1) -> tuple[list[str], list[tuple]]:
-    """Extract headers and data rows from a worksheet.
+def _sheet_to_records(ws: SpreadsheetSheet, header_row: int = 1) -> tuple[list[str], list[tuple]]:
+    """Extract headers and data rows from a sheet.
 
     Returns (headers, rows). Skips fully-empty data rows.
     """
-    max_col = ws.max_column or 0
-    max_row = ws.max_row or 0
+    max_col = ws.max_column
+    max_row = ws.max_row
 
     if max_col == 0:
         return [], []
 
     headers = []
     for col in range(1, max_col + 1):
-        val = ws.cell(row=header_row, column=col).value
+        val = ws.cell_value(header_row, col)
         if val is None:
             break
         headers.append(str(val))
@@ -593,7 +526,7 @@ def _sheet_to_records(ws, header_row: int = 1) -> tuple[list[str], list[tuple]]:
     num_cols = len(headers)
     rows = []
     for row_idx in range(header_row + 1, max_row + 1):
-        row = tuple(ws.cell(row=row_idx, column=c).value for c in range(1, num_cols + 1))
+        row = tuple(ws.cell_value(row_idx, c) for c in range(1, num_cols + 1))
         if all(v is None for v in row):
             continue
         rows.append(row)
@@ -643,7 +576,9 @@ def _infer_duckdb_type(values) -> str:
     return "VARCHAR"
 
 
-def _load_sheets_to_duckdb(wb: Workbook, header_row: int = 1) -> duckdb.DuckDBPyConnection:
+def _load_sheets_to_duckdb(
+    wb: SpreadsheetWorkbook, header_row: int = 1,
+) -> duckdb.DuckDBPyConnection:
     """Load all sheets into an in-memory DuckDB database.
 
     Each sheet becomes a table named after its sheet title.
@@ -717,7 +652,7 @@ def _infer_describe_type(values) -> str:
 
 @mcp.tool()
 def describe_table(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     sheet: Annotated[str | None, Field(description="Sheet name to describe. If omitted, describes all sheets in the workbook.")] = None,
     header_row: Annotated[int, Field(description="1-based row number containing column headers. Defaults to 1.")] = 1,
 ) -> list[dict] | dict:
@@ -730,7 +665,7 @@ def describe_table(
 
     When sheet is omitted, returns a list of descriptions for all sheets.
     """
-    wb = _load(file)
+    wb = load_workbook(file)
     targets = [_resolve_sheet(wb, sheet)] if sheet else wb.worksheets
 
     results = []
@@ -760,10 +695,10 @@ def describe_table(
 
 @mcp.tool()
 def sql_query(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     sql: Annotated[str, Field(description=(
         "SQL SELECT statement to execute. Each sheet is a table (quote names "
-        "with double quotes if they contain spaces, e.g. '\"Q1 Sales\"'). "
+        "with double quotes if they contain spaces). "
         "Supports WHERE, ORDER BY, LIMIT, GROUP BY, HAVING, JOINs across "
         "sheets, DISTINCT, UNION, subqueries, and aggregates (COUNT, SUM, "
         "AVG, MIN, MAX). "
@@ -789,7 +724,7 @@ def sql_query(
             "Use sql_execute for INSERT/UPDATE/DELETE."
         )
 
-    wb = _load(file)
+    wb = load_workbook(file)
     conn = _load_sheets_to_duckdb(wb, header_row)
 
     result = conn.execute(sql_stripped)
@@ -799,7 +734,7 @@ def sql_query(
 
 @mcp.tool()
 def sql_execute(
-    file: Annotated[str, Field(description="Path to the .xlsx file")],
+    file: Annotated[str, Field(description="Path to the spreadsheet file")],
     sql: Annotated[str, Field(description=(
         "SQL mutation statement to execute: INSERT INTO, UPDATE, or "
         "DELETE FROM. Sheet names are table names. "
@@ -813,15 +748,12 @@ def sql_execute(
     Supports INSERT INTO (adds rows), UPDATE (modifies cell values), and
     DELETE FROM (removes rows). The target sheet is determined from the
     SQL statement. After execution, the modified table is written back to
-    the .xlsx file atomically. Returns {"affected_rows": N}.
-
-    All sheets are available for cross-sheet references (e.g. INSERT INTO
-    Summary SELECT ... FROM Transactions).
+    the file atomically. Returns {"affected_rows": N}.
     """
     sql_stripped = sql.strip().rstrip(";")
     target_table = _extract_target_table(sql_stripped)
 
-    wb = _load(file)
+    wb = load_workbook(file)
     ws = _resolve_sheet(wb, target_table)
 
     headers, _ = _sheet_to_records(ws, header_row)
@@ -841,13 +773,13 @@ def sql_execute(
     old_max_row = ws.max_row or header_row
     for r in range(header_row + 1, old_max_row + 1):
         for c in range(1, num_cols + 1):
-            ws.cell(row=r, column=c).value = None
+            ws.set_cell(r, c, None)
 
     for r_idx, row in enumerate(new_rows):
         for c_idx, val in enumerate(row):
-            ws.cell(row=header_row + 1 + r_idx, column=c_idx + 1, value=val)
+            ws.set_cell(header_row + 1 + r_idx, c_idx + 1, val)
 
-    _save(wb, file)
+    wb.save(file)
     return {"affected_rows": affected}
 
 

@@ -1,5 +1,7 @@
 # mcp-server-spreadsheet
 
+mcp-name: io.github.marekrost/mcp-server-spreadsheet
+
 Data-first MCP server for reading and writing spreadsheet files (`.xlsx`, `.csv`, `.ods`).
 
 ## Key features

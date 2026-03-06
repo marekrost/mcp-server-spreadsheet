@@ -9,5 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Registry-specific tools
+registry/
+
 # Secrets
 .env
+.mcpregistry_github_token
+.mcpregistry_registry_token

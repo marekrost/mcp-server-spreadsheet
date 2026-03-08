@@ -4,10 +4,6 @@ mcp-name: io.github.marekrost/mcp-server-spreadsheet
 
 Data-first MCP server for reading and writing spreadsheet files (`.xlsx`, `.csv`, `.ods`).
 
-<a href="https://glama.ai/mcp/servers/@marekrost/mcp-server-spreadsheet">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/@marekrost/mcp-server-spreadsheet/badge" alt="mcp-server-spreadsheet MCP server" />
-</a>
-
 ## Key features
 
 - **Multi-format** — works with Excel (`.xlsx`), CSV (`.csv`), and OpenDocument (`.ods`) files through a unified tool interface.

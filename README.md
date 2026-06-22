@@ -18,7 +18,7 @@ Data-first MCP server for reading and writing spreadsheet files (`.xlsx`, `.csv`
 
 ## Requirements
 
-- Python 3.13+
+- Python 3.10+
 
 ## Installation
 

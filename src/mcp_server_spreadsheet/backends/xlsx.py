@@ -39,7 +39,7 @@ class XlsxSheet(SpreadsheetSheet):
         return self._ws.cell(row=row, column=col).value
 
     def set_cell(self, row: int, col: int, value: Any) -> None:
-        self._ws.cell(row=row, column=col, value=value)
+        self._ws.cell(row=row, column=col).value = value
 
     def iter_rows(
         self,

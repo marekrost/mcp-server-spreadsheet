@@ -16,3 +16,6 @@ registry/
 .env
 .mcpregistry_github_token
 .mcpregistry_registry_token
+
+# AI runtime
+.mcp.json

@@ -215,6 +215,15 @@ DELETE FROM Logs WHERE date < '2024-01-01'
 
 Sheet names with spaces must be quoted: `SELECT * FROM "Q1 Sales"`.
 
+## Running tests
+
+```bash
+uv sync --group dev
+uv run pytest
+```
+
+Every tool is exercised against `.xlsx`, `.csv`, and `.ods` fixtures generated into a temp directory.
+
 ## Common Parameters
 
 Every sheet-level tool accepts:

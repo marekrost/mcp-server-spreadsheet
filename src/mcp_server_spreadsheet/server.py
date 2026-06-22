@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 from datetime import date, datetime
@@ -8,7 +9,7 @@ import duckdb
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from .backends import SUPPORTED_EXTENSIONS, load_workbook, create_workbook
+from .backends import SUPPORTED_EXTENSIONS, load_workbook as _load_workbook, create_workbook
 from .backends.base import (
     SpreadsheetWorkbook,
     SpreadsheetSheet,
@@ -26,6 +27,41 @@ _EXT_LABEL = ", ".join(sorted(SUPPORTED_EXTENSIONS))
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _allowed_root() -> Path | None:
+    """Return the configured root directory, or None if unset."""
+    root = os.environ.get("MCP_SPREADSHEET_ROOT")
+    if not root:
+        return None
+    return Path(root).expanduser().resolve()
+
+
+def _check_path(path: str) -> Path:
+    """Resolve `path` and ensure it stays within MCP_SPREADSHEET_ROOT (if set).
+
+    Returns the resolved Path. Raises ValueError with a clear message that
+    the calling AI agent can understand if the path escapes the root.
+    """
+    resolved = Path(path).expanduser().resolve()
+    root = _allowed_root()
+    if root is None:
+        return resolved
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise ValueError(
+            f"Path {path!r} is outside the allowed root {str(root)!r}. "
+            f"This server is configured with MCP_SPREADSHEET_ROOT and only "
+            f"accepts paths inside that directory."
+        )
+    return resolved
+
+
+def load_workbook(file: str) -> SpreadsheetWorkbook:
+    """Path-checked wrapper around the backend loader."""
+    _check_path(file)
+    return _load_workbook(file)
+
 
 def _resolve_sheet(wb: SpreadsheetWorkbook, sheet: str | None) -> SpreadsheetSheet:
     if sheet is None:
@@ -45,7 +81,7 @@ def list_workbooks(
 
     Returns the full path of each file found, sorted alphabetically.
     """
-    d = Path(directory)
+    d = _check_path(directory)
     if not d.is_dir():
         raise ValueError(f"Not a directory: {directory}")
     return sorted(
@@ -66,12 +102,12 @@ def create_workbook_file(
     The file must not already exist. Returns the absolute path of the
     created file.
     """
-    p = Path(file)
+    p = _check_path(file)
     if p.exists():
         raise ValueError(f"File already exists: {file}")
     wb = create_workbook(file, sheet_name)
     wb.save(file)
-    return str(p.resolve())
+    return str(p)
 
 
 @mcp.tool()
@@ -84,14 +120,14 @@ def copy_workbook(
     Performs a full file copy preserving all data. The destination must
     not already exist. Returns the absolute path of the new file.
     """
-    src = Path(source)
+    src = _check_path(source)
     if not src.exists():
         raise ValueError(f"Source not found: {source}")
-    dst = Path(destination)
+    dst = _check_path(destination)
     if dst.exists():
         raise ValueError(f"Destination already exists: {destination}")
     shutil.copy2(src, dst)
-    return str(dst.resolve())
+    return str(dst)
 
 
 # ---------------------------------------------------------------------------

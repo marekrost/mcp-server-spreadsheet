@@ -106,6 +106,24 @@ uvx mcp-server-spreadsheet
 uv run main.py
 ```
 
+### Restricting file access to a directory (optional)
+
+Set `MCP_SPREADSHEET_ROOT` to confine all path arguments to a single directory tree. Paths outside it are rejected with a clear error returned to the agent.
+
+```json
+{
+  "mcpServers": {
+    "mcp-server-spreadsheet": {
+      "command": "uvx",
+      "args": ["mcp-server-spreadsheet"],
+      "env": { "MCP_SPREADSHEET_ROOT": "/home/me/spreadsheets" }
+    }
+  }
+}
+```
+
+Unset (the default), any path the server process can access is allowed.
+
 ## Format notes
 
 | Format | Sheets | Formulas | Types |

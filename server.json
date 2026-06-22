@@ -6,16 +6,23 @@
     "url": "https://github.com/marekrost/mcp-server-spreadsheet",
     "source": "github"
   },
-  "version": "0.2.1",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-server-spreadsheet",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "transport": {
         "type": "stdio"
       },
-      "environmentVariables": []
+      "environmentVariables": [
+        {
+          "name": "MCP_SPREADSHEET_ROOT",
+          "description": "Optional. Absolute path to a directory; all tool path arguments are restricted to this tree. Unset = no restriction.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
     }
   ]
 }

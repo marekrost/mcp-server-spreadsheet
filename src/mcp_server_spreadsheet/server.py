@@ -57,16 +57,48 @@ def _check_path(path: str) -> Path:
     return resolved
 
 
+def _strip_wrapping_quotes(s: str) -> str | None:
+    """If `s` is wrapped in matching quotes, return the inner content; else None.
+
+    Workaround for buggy MCP clients (e.g. OpenCode) that double-encode string
+    arguments. Only applied as a *fallback* — never overrides a literal match.
+    """
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        return s[1:-1]
+    return None
+
+
 def load_workbook(file: str) -> SpreadsheetWorkbook:
-    """Path-checked wrapper around the backend loader."""
-    _check_path(file)
-    return _load_workbook(file)
+    """Path-checked wrapper around the backend loader.
+
+    Falls back to a quote-stripped path only if the literal path doesn't exist.
+    """
+    try:
+        _check_path(file)
+        return _load_workbook(file)
+    except (ValueError, FileNotFoundError):
+        inner = _strip_wrapping_quotes(file)
+        if inner is None:
+            raise
+        _check_path(inner)
+        return _load_workbook(inner)
+
+
+def _get_sheet(wb: SpreadsheetWorkbook, name: str) -> SpreadsheetSheet:
+    """Look up a sheet, falling back to a quote-stripped name on miss."""
+    try:
+        return wb.get_sheet(name)
+    except ValueError:
+        inner = _strip_wrapping_quotes(name)
+        if inner is None:
+            raise
+        return wb.get_sheet(inner)
 
 
 def _resolve_sheet(wb: SpreadsheetWorkbook, sheet: str | None) -> SpreadsheetSheet:
     if sheet is None:
         return wb.worksheets[0]
-    return wb.get_sheet(sheet)
+    return _get_sheet(wb, sheet)
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +206,7 @@ def rename_sheet(
     Returns the new sheet name on success.
     """
     wb = load_workbook(file)
-    ws = wb.get_sheet(old_name)
+    ws = _get_sheet(wb, old_name)
     ws.title = new_name
     wb.save(file)
     return new_name
@@ -190,9 +222,10 @@ def delete_sheet(
     All data in the sheet is permanently removed. Not supported for CSV files.
     """
     wb = load_workbook(file)
-    wb.delete_sheet(name)
+    resolved = _get_sheet(wb, name).title
+    wb.delete_sheet(resolved)
     wb.save(file)
-    return f"Deleted sheet {name!r}"
+    return f"Deleted sheet {resolved!r}"
 
 
 @mcp.tool()
@@ -208,7 +241,8 @@ def copy_sheet(
     Not supported for CSV files.
     """
     wb = load_workbook(file)
-    copied = wb.copy_sheet(source_name)
+    resolved = _get_sheet(wb, source_name).title
+    copied = wb.copy_sheet(resolved)
     if new_name:
         copied.title = new_name
     if position is not None:

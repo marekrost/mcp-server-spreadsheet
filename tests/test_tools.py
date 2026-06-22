@@ -308,6 +308,86 @@ def test_sql_execute_insert(workbook, fmt):
 
 
 # ---------------------------------------------------------------------------
+# Quote-stripping fallback (workaround for buggy MCP clients, e.g. OpenCode)
+# ---------------------------------------------------------------------------
+
+def test_sheet_name_double_quoted_fallback(workbook, fmt):
+    """A double-quoted sheet name resolves to the unquoted sheet when no
+    literal match exists."""
+    sheet_name = "default" if fmt == ".csv" else "People"
+    val = server.read_cell(workbook, "A1", sheet=f'"{sheet_name}"')
+    assert val == "name"
+
+
+def test_sheet_name_single_quoted_fallback(workbook, fmt):
+    sheet_name = "default" if fmt == ".csv" else "People"
+    val = server.read_cell(workbook, "A1", sheet=f"'{sheet_name}'")
+    assert val == "name"
+
+
+def test_sheet_name_unquoted_still_works(workbook, fmt):
+    sheet_name = "default" if fmt == ".csv" else "People"
+    assert server.read_cell(workbook, "A1", sheet=sheet_name) == "name"
+
+
+def test_sheet_name_missing_still_errors(workbook):
+    with pytest.raises(ValueError):
+        server.read_cell(workbook, "A1", sheet="NoSuchSheet")
+
+
+def test_sheet_name_missing_quoted_still_errors(workbook):
+    with pytest.raises(ValueError):
+        server.read_cell(workbook, "A1", sheet='"NoSuchSheet"')
+
+
+def test_exact_quoted_name_wins_over_fallback(tmp_path):
+    """Security-critical: when a sheet literally named '"Summary"' exists,
+    the fallback must NOT silently redirect to a different sheet named
+    'Summary'. Exact match always wins."""
+    path = tmp_path / "evil.xlsx"
+    wb = server.create_workbook(str(path), sheet_name='"Summary"')
+    wb.worksheets[0].append(["evil"])
+    real = wb.create_sheet(title="Summary")
+    real.append(["good"])
+    wb.save(str(path))
+
+    # The literal quoted name must read the evil sheet, not the good one.
+    assert server.read_cell(str(path), "A1", sheet='"Summary"') == "evil"
+    # The unquoted name reads the good sheet.
+    assert server.read_cell(str(path), "A1", sheet="Summary") == "good"
+
+
+def test_rename_sheet_quoted_fallback(workbook, skip_csv):
+    server.rename_sheet(workbook, '"People"', "Humans")
+    assert "Humans" in server.list_sheets(workbook)
+
+
+def test_delete_sheet_quoted_fallback(workbook, skip_csv):
+    server.delete_sheet(workbook, '"Orders"')
+    assert "Orders" not in server.list_sheets(workbook)
+
+
+def test_copy_sheet_quoted_fallback(workbook, skip_csv):
+    new = server.copy_sheet(workbook, '"People"', new_name="PeopleCopy")
+    assert new == "PeopleCopy"
+
+
+def test_file_path_double_quoted_fallback(workbook):
+    """A double-quoted file path resolves to the unquoted path when no
+    literal file exists at the quoted path."""
+    assert server.read_cell(f'"{workbook}"', "A1") == "name"
+
+
+def test_file_path_unquoted_still_works(workbook):
+    assert server.read_cell(workbook, "A1") == "name"
+
+
+def test_file_path_missing_still_errors(tmp_path):
+    with pytest.raises((ValueError, FileNotFoundError)):
+        server.read_cell(str(tmp_path / "nope.xlsx"), "A1")
+
+
+# ---------------------------------------------------------------------------
 # Path restriction (MCP_SPREADSHEET_ROOT)
 # ---------------------------------------------------------------------------
 

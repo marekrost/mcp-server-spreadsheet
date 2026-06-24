@@ -307,6 +307,122 @@ def test_sql_execute_insert(workbook, fmt):
     assert "Eve" in [r["name"] for r in rows]
 
 
+def _seed_offset_workbook(tmp_path, fmt):
+    """Workbook where headers/data don't start at row 1.
+
+    People: headers at row 3, data starts row 4.
+    Orders (non-CSV): header at row 1, units row at 2, data starts row 3.
+    """
+    path = tmp_path / f"offset{fmt}"
+    wb = server.create_workbook(str(path), sheet_name="People")
+    ws = wb.worksheets[0]
+    ws.append(["Quarterly People Report", None, None])
+    ws.append([None, None, None])
+    ws.append(["name", "age", "city"])
+    ws.append(["Alice", 30, "Prague"])
+    ws.append(["Bob", 25, "Brno"])
+    ws.append(["Carol", 40, "Ostrava"])
+
+    if fmt != ".csv":
+        orders = wb.create_sheet(title="Orders")
+        orders.append(["order_id", "name", "amount"])
+        orders.append(["int", "text", "USD"])
+        orders.append([1, "Alice", 100])
+        orders.append([2, "Bob", 250])
+        orders.append([3, "Alice", 75])
+
+    wb.save(str(path))
+    return str(path)
+
+
+def test_describe_table_with_offset_header(tmp_path, fmt):
+    path = _seed_offset_workbook(tmp_path, fmt)
+    table = "default" if fmt == ".csv" else "People"
+    desc = server.describe_table(path, sheet=table, header_row=3)
+    assert [c["name"] for c in desc["columns"]] == ["name", "age", "city"]
+    assert desc["row_count"] == 3
+
+
+def test_sql_query_per_sheet_header_row(tmp_path, fmt):
+    if fmt == ".csv":
+        pytest.skip("single-sheet")
+    path = _seed_offset_workbook(tmp_path, fmt)
+    rows = server.sql_query(
+        path,
+        'SELECT o.order_id, p.city FROM "Orders" o '
+        'JOIN "People" p ON o.name = p.name ORDER BY o.order_id',
+        header_row={"People": 3, "Orders": 1},
+        data_start_row={"Orders": 3},
+    )
+    assert rows[0] == {"order_id": 1, "city": "Prague"}
+    assert len(rows) == 3
+
+
+def test_sql_execute_update_with_offset(tmp_path, fmt):
+    path = _seed_offset_workbook(tmp_path, fmt)
+    table = "default" if fmt == ".csv" else "People"
+    result = server.sql_execute(
+        path,
+        f"UPDATE \"{table}\" SET city = 'X' WHERE name = 'Alice'",
+        header_row=3,
+    )
+    assert result["affected_rows"] == 1
+    rows = server.sql_query(
+        path,
+        f'SELECT city FROM "{table}" WHERE name = \'Alice\'',
+        header_row=3,
+    )
+    assert rows == [{"city": "X"}]
+
+
+def test_sql_query_header_and_data_both_offset(tmp_path, fmt):
+    """Header at row 4, data starts row 6 (gap of one units row at row 5)."""
+    path = tmp_path / f"gap{fmt}"
+    wb = server.create_workbook(str(path), sheet_name="People")
+    ws = wb.worksheets[0]
+    ws.append(["Report title", None, None])
+    ws.append([None, None, None])
+    ws.append(["generated 2026-06-24", None, None])
+    ws.append(["name", "age", "city"])
+    ws.append(["str", "int", "str"])
+    ws.append(["Alice", 30, "Prague"])
+    ws.append(["Bob", 25, "Brno"])
+    wb.save(str(path))
+
+    table = "default" if fmt == ".csv" else "People"
+    desc = server.describe_table(
+        str(path), sheet=table, header_row=4, data_start_row=6,
+    )
+    assert [c["name"] for c in desc["columns"]] == ["name", "age", "city"]
+    assert desc["row_count"] == 2
+    # The units row must not leak in as data
+    assert desc["sample"][0] == {"name": "Alice", "age": 30, "city": "Prague"}
+
+    rows = server.sql_query(
+        str(path),
+        f'SELECT name, age FROM "{table}" ORDER BY age',
+        header_row=4,
+        data_start_row=6,
+    )
+    assert rows == [{"name": "Bob", "age": 25}, {"name": "Alice", "age": 30}]
+
+
+def test_sql_execute_offset_preserves_pre_header_rows(tmp_path, fmt):
+    """Writing back after sql_execute must not clobber rows above header_row."""
+    if fmt == ".csv":
+        pytest.skip("CSV has no concept of preserved pre-header content on reload")
+    path = _seed_offset_workbook(tmp_path, fmt)
+    server.sql_execute(
+        path,
+        "DELETE FROM \"People\" WHERE name = 'Bob'",
+        header_row=3,
+    )
+    wb = server.load_workbook(path)
+    ws = wb.worksheets[0]
+    assert ws.cell_value(1, 1) == "Quarterly People Report"
+    assert ws.cell_value(3, 1) == "name"
+
+
 # ---------------------------------------------------------------------------
 # Quote-stripping fallback (workaround for buggy MCP clients, e.g. OpenCode)
 # ---------------------------------------------------------------------------

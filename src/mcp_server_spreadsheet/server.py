@@ -572,10 +572,39 @@ def search_sheet(
 # Table Mode — SQL Helpers
 # ---------------------------------------------------------------------------
 
-def _sheet_to_records(ws: SpreadsheetSheet, header_row: int = 1) -> tuple[list[str], list[tuple]]:
+HeaderRowSpec = int | dict[str, int]
+DataStartSpec = int | dict[str, int] | None
+
+
+def _resolve_header_row(ws: SpreadsheetSheet, spec: HeaderRowSpec) -> int:
+    """Resolve the header row for a given sheet from an int or per-sheet dict."""
+    if isinstance(spec, dict):
+        return int(spec.get(ws.title, 1))
+    return int(spec)
+
+
+def _resolve_data_start_row(
+    ws: SpreadsheetSheet, spec: DataStartSpec, header_row: int,
+) -> int:
+    """Resolve the first data row for a sheet. Defaults to header_row + 1."""
+    if spec is None:
+        return header_row + 1
+    if isinstance(spec, dict):
+        if ws.title in spec:
+            return int(spec[ws.title])
+        return header_row + 1
+    return int(spec)
+
+
+def _sheet_to_records(
+    ws: SpreadsheetSheet,
+    header_row: int = 1,
+    data_start_row: int | None = None,
+) -> tuple[list[str], list[tuple]]:
     """Extract headers and data rows from a sheet.
 
-    Returns (headers, rows). Skips fully-empty data rows.
+    Returns (headers, rows). Skips fully-empty data rows. If data_start_row
+    is None, data is read from header_row + 1.
     """
     max_col = ws.max_column
     max_row = ws.max_row
@@ -593,9 +622,12 @@ def _sheet_to_records(ws: SpreadsheetSheet, header_row: int = 1) -> tuple[list[s
     if not headers:
         return [], []
 
+    if data_start_row is None:
+        data_start_row = header_row + 1
+
     num_cols = len(headers)
     rows = []
-    for row_idx in range(header_row + 1, max_row + 1):
+    for row_idx in range(data_start_row, max_row + 1):
         row = tuple(ws.cell_value(row_idx, c) for c in range(1, num_cols + 1))
         if all(v is None for v in row):
             continue
@@ -647,16 +679,22 @@ def _infer_duckdb_type(values) -> str:
 
 
 def _load_sheets_to_duckdb(
-    wb: SpreadsheetWorkbook, header_row: int = 1,
+    wb: SpreadsheetWorkbook,
+    header_row: HeaderRowSpec = 1,
+    data_start_row: DataStartSpec = None,
 ) -> duckdb.DuckDBPyConnection:
     """Load all sheets into an in-memory DuckDB database.
 
-    Each sheet becomes a table named after its sheet title.
+    Each sheet becomes a table named after its sheet title. header_row and
+    data_start_row may be an int (applied to every sheet) or a dict mapping
+    sheet name to row number (sheets not listed fall back to defaults).
     """
     conn = duckdb.connect()
 
     for ws in wb.worksheets:
-        headers, rows = _sheet_to_records(ws, header_row)
+        hr = _resolve_header_row(ws, header_row)
+        ds = _resolve_data_start_row(ws, data_start_row, hr)
+        headers, rows = _sheet_to_records(ws, hr, ds)
         if not headers:
             continue
 
@@ -724,7 +762,8 @@ def _infer_describe_type(values) -> str:
 def describe_table(
     file: Annotated[str, Field(description="Path to the spreadsheet file")],
     sheet: Annotated[str | None, Field(description="Sheet name to describe. If omitted, describes all sheets in the workbook.")] = None,
-    header_row: Annotated[int, Field(description="1-based row number containing column headers. Defaults to 1.")] = 1,
+    header_row: Annotated[int | dict[str, int], Field(description="1-based row number containing column headers, or a per-sheet mapping like {\"Sales\": 1, \"Forecast\": 4}. Sheets not listed default to 1.")] = 1,
+    data_start_row: Annotated[int | dict[str, int] | None, Field(description="1-based row where data begins. Use this to skip rows (e.g. a units row) between the header and data. Int or per-sheet mapping. Defaults to header_row + 1.")] = None,
 ) -> list[dict] | dict:
     """Inspect the structure of a sheet treated as a database table.
 
@@ -740,7 +779,9 @@ def describe_table(
 
     results = []
     for ws in targets:
-        headers, rows = _sheet_to_records(ws, header_row)
+        hr = _resolve_header_row(ws, header_row)
+        ds = _resolve_data_start_row(ws, data_start_row, hr)
+        headers, rows = _sheet_to_records(ws, hr, ds)
 
         if not headers:
             results.append({"sheet": ws.title, "columns": [], "row_count": 0, "sample": []})
@@ -775,7 +816,8 @@ def sql_query(
         "Example: SELECT name, revenue FROM Sales WHERE status = 'Active' "
         "ORDER BY revenue DESC LIMIT 20"
     ))],
-    header_row: Annotated[int, Field(description="1-based row number containing column headers. Defaults to 1.")] = 1,
+    header_row: Annotated[int | dict[str, int], Field(description="1-based row number containing column headers, or a per-sheet mapping like {\"Sales\": 1, \"Forecast\": 4}. Sheets not listed default to 1.")] = 1,
+    data_start_row: Annotated[int | dict[str, int] | None, Field(description="1-based row where data begins. Use this to skip rows (e.g. a units row) between the header and data. Int or per-sheet mapping. Defaults to header_row + 1.")] = None,
 ) -> list[dict]:
     """Execute a read-only SQL SELECT query against the spreadsheet data.
 
@@ -795,7 +837,7 @@ def sql_query(
         )
 
     wb = load_workbook(file)
-    conn = _load_sheets_to_duckdb(wb, header_row)
+    conn = _load_sheets_to_duckdb(wb, header_row, data_start_row)
 
     result = conn.execute(sql_stripped)
     columns = [desc[0] for desc in result.description]
@@ -811,7 +853,8 @@ def sql_execute(
         "Example: UPDATE Sales SET status = 'Closed' "
         "WHERE quarter = 'Q1' AND revenue < 1000"
     ))],
-    header_row: Annotated[int, Field(description="1-based row number containing column headers. Defaults to 1.")] = 1,
+    header_row: Annotated[int | dict[str, int], Field(description="1-based row number containing column headers, or a per-sheet mapping like {\"Sales\": 1, \"Forecast\": 4}. Sheets not listed default to 1.")] = 1,
+    data_start_row: Annotated[int | dict[str, int] | None, Field(description="1-based row where data begins. Use this to skip rows (e.g. a units row) between the header and data. Int or per-sheet mapping. Defaults to header_row + 1.")] = None,
 ) -> dict:
     """Execute a mutating SQL statement and write changes back to the file.
 
@@ -826,13 +869,16 @@ def sql_execute(
     wb = load_workbook(file)
     ws = _resolve_sheet(wb, target_table)
 
-    headers, _ = _sheet_to_records(ws, header_row)
+    hr = _resolve_header_row(ws, header_row)
+    ds = _resolve_data_start_row(ws, data_start_row, hr)
+
+    headers, _ = _sheet_to_records(ws, hr, ds)
     if not headers:
-        raise ValueError(f"Sheet {target_table!r} has no headers at row {header_row}")
+        raise ValueError(f"Sheet {target_table!r} has no headers at row {hr}")
     headers = _dedup_headers(headers)
     num_cols = len(headers)
 
-    conn = _load_sheets_to_duckdb(wb, header_row)
+    conn = _load_sheets_to_duckdb(wb, header_row, data_start_row)
 
     result = conn.execute(sql_stripped)
     affected = result.fetchone()[0]
@@ -840,14 +886,14 @@ def sql_execute(
     col_list = ", ".join(f'"{h}"' for h in headers)
     new_rows = conn.execute(f'SELECT {col_list} FROM "{target_table}"').fetchall()
 
-    old_max_row = ws.max_row or header_row
-    for r in range(header_row + 1, old_max_row + 1):
+    old_max_row = ws.max_row or ds
+    for r in range(ds, old_max_row + 1):
         for c in range(1, num_cols + 1):
             ws.set_cell(r, c, None)
 
     for r_idx, row in enumerate(new_rows):
         for c_idx, val in enumerate(row):
-            ws.set_cell(header_row + 1 + r_idx, c_idx + 1, val)
+            ws.set_cell(ds + r_idx, c_idx + 1, val)
 
     wb.save(file)
     return {"affected_rows": affected}

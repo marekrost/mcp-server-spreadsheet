@@ -215,6 +215,30 @@ DELETE FROM Logs WHERE date < '2024-01-01'
 
 Sheet names with spaces must be quoted: `SELECT * FROM "Q1 Sales"`.
 
+#### Sheets whose table doesn't start at row 1
+
+All three SQL tools accept `header_row` and `data_start_row`. Each can be an
+int (applied to every sheet) or a `{sheet_name: row}` mapping (sheets not
+listed fall back to the default). Use `header_row` when column titles live
+below row 1, and `data_start_row` when extra rows (e.g. a units row) sit
+between the header and the data.
+
+```python
+# Header on row 3, data follows immediately
+sql_query(file, 'SELECT * FROM "People"', header_row=3)
+
+# Mixed workbook: People headers at row 3, Orders header at row 1 with a
+# units row at row 2.
+sql_query(
+    file,
+    'SELECT * FROM "Orders" o JOIN "People" p ON o.name = p.name',
+    header_row={"People": 3, "Orders": 1},
+    data_start_row={"Orders": 3},
+)
+```
+
+`sql_execute` preserves rows above `header_row` when writing changes back.
+
 ## Running tests
 
 ```bash

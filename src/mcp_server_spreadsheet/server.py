@@ -9,6 +9,7 @@ import duckdb
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from . import __version__
 from .backends import SUPPORTED_EXTENSIONS, load_workbook as _load_workbook, create_workbook
 from .backends.base import (
     SpreadsheetWorkbook,
@@ -22,6 +23,16 @@ from .backends.base import (
 mcp = FastMCP("mcp-server-spreadsheet")
 
 _EXT_LABEL = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+
+@mcp.resource("server://version", mime_type="text/plain")
+def server_version() -> str:
+    """Installed version of mcp-server-spreadsheet."""
+    return __version__
 
 
 # ---------------------------------------------------------------------------

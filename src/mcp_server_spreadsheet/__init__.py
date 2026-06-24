@@ -1,3 +1,8 @@
 """MCP server for reading and writing spreadsheet files."""
 
-__version__ = "0.2.0"
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+try:
+    __version__ = _pkg_version("mcp-server-spreadsheet")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"

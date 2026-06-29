@@ -1,5 +1,3 @@
-"""MCP server for reading and writing spreadsheet files."""
-
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
 try:

@@ -10,7 +10,7 @@ packages = ["src/mcp_server_spreadsheet"]
 
 [project]
 name = "mcp-server-spreadsheet"
-version = "0.3.2"
+version = "0.3.3"
 description = "MCP server for reading and writing spreadsheet files (.xlsx, .csv, .ods)"
 readme = "README.md"
 license = "MIT"
